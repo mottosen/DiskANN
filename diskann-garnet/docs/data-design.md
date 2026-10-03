@@ -88,11 +88,11 @@ The are several terms in the index used for internal state management of the dis
 
 #### Start Points
 
-Currently only a single start point is supported, and it is given the internal ID of 0. During normal insertion, its vector data is the same as the first vector that was inserted. It will not be returned by search, and its vector data will not be modified during the lifetime of the index.
+Only a single start point is supported. Its internal ID is fixed when the provider is created and defaults to `DEFAULT_START_POINT_ID` (`u32::MAX`). During normal insertion, its vector data is the same as the first vector that was inserted. It will not be returned by search, and its vector data will not be modified during the lifetime of the index.
 
-For a nonempty import, finalization copies the first used imported ID's full vector, quantized vector (if present), and neighbor list to ID 0. ID 0 cannot be imported directly.
+For a nonempty import, finalization copies the first used imported ID's full vector, quantized vector (if present), and neighbor list to the configured start-point ID. The start point cannot be imported directly.
 
-Start points have no associated attributes.
+Start points have no associated attributes or ID mappings and are not counted as active vectors.
 
 #### Metadata
 
@@ -109,8 +109,7 @@ The free space map is a series of blocks where each block is a string of 1-bit v
 
 During startup, the index will scan FSM blocks in sequence to restore state. It will update the correct bits in a FSM block whenever the state of an internal ID changes.
 
-Importing a term keyed by an internal ID marks that ID as used, expanding the map and advancing the maximum assigned ID as needed. Finalization claims ID 0 for a nonempty import, using it 
-for the start point.
+Importing a term keyed by internal ID marks that ID as used unless it is the start point's ID, expanding the map and advancing the maximum assigned ID as needed. The start point is tracked separately from the FSM. Import finalization stores the start point separately.
 
 ##### Quantizer Tables
 
@@ -131,7 +130,9 @@ The flag is restored on startup. If absent, imports are enabled only for an unqu
 *Key*: Internal ID as bytes; this key is always 4 bytes in length.
 *Value*: External ID; this is variable length byte string that the user assigned.
 
-Each internal ID corresponds to an external ID, which is a byte string of arbitrary length. The external IDs are stored unmodified and read/written as a whole.
+Each internal ID, except the start point, corresponds to an external ID, which
+is a byte string of arbitrary length. The external IDs are stored unmodified and
+read/written as a whole.
 
 Lookup of an external ID will happen during post processing when we return results to Garnet.
 
@@ -146,7 +147,7 @@ Lookup of an internal ID will happen for things such as delete.
 
 ## ID Mapping
 
-Garnet vector set IDs are arbitrary length byte strings natively. These are quite inefficient for indexing so we map each external ID to a `u32` internal ID. This imposes a maximum on the number of vectors that are indexable of `u32::MAX - 1` (the start point always consumes an ID).
+Garnet vector set IDs are arbitrary length byte strings natively. These are quite inefficient for indexing so we map each external ID to a `u32` internal ID. One internal ID is reserved for the start point and cannot be allocated to inserted vectors.
 
 When the DiskANN algorithm performs searches and other operations it works with internal IDs only. The external IDs are only used when returning data to the user (which has no concept of the internal IDs) or when asked to perform operations like delete on specific vectors which will be identified by their external ID. In order to convert back and forth for these occasions, lookup tables must be kept for the mapping.
 

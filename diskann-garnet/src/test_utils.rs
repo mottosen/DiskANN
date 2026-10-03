@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn garnet_provider_with_store_callbacks() {
-        use crate::provider::GarnetProvider;
+        use crate::provider::{DEFAULT_START_POINT_ID, GarnetProvider};
         use diskann_vector::distance::Metric;
 
         let store: Store = Store::new();
@@ -298,6 +298,7 @@ mod tests {
             VectorQuantType::NoQuant,
             Metric::L2,
             max_degree,
+            DEFAULT_START_POINT_ID,
             callbacks,
             &ctx,
         );
@@ -317,6 +318,7 @@ mod tests {
             VectorQuantType::NoQuant,
             Metric::L2,
             max_degree,
+            DEFAULT_START_POINT_ID,
             callbacks,
             &ctx,
         );
