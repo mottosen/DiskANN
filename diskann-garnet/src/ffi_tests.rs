@@ -62,6 +62,22 @@ mod tests {
         metric_type: i32,
         write_callback: WriteCallback,
     ) -> (*const c_void, Context) {
+        create_test_index_with_start_point(
+            store,
+            quant_type,
+            metric_type,
+            write_callback,
+            DEFAULT_START_POINT_ID,
+        )
+    }
+
+    fn create_test_index_with_start_point(
+        store: &Store,
+        quant_type: VectorQuantType,
+        metric_type: i32,
+        write_callback: WriteCallback,
+        start_point_id: u32,
+    ) -> (*const c_void, Context) {
         let callbacks = store.callbacks();
         let ctx = Context::new(0);
         let mut quant_needed = false;
@@ -80,6 +96,7 @@ mod tests {
                 metric_type,
                 l_build,
                 max_degree,
+                start_point_id,
                 callbacks.read_callback(),
                 write_callback,
                 callbacks.delete_callback(),
@@ -101,6 +118,38 @@ mod tests {
 
         unsafe {
             drop_index(ctx.get(), index_ptr);
+        }
+    }
+
+    #[test]
+    fn basic_create_index_with_start_point() {
+        for start_point_id in [0, 42, DEFAULT_START_POINT_ID] {
+            let store = Store::new();
+            let create = || {
+                create_test_index_with_start_point(
+                    &store,
+                    VectorQuantType::NoQuant,
+                    Metric::L2 as i32,
+                    store.callbacks().write_callback(),
+                    start_point_id,
+                )
+            };
+            let (index_ptr, ctx) = create();
+            assert!(!index_ptr.is_null());
+            let point = [1.0f32, 2.0];
+            assert_eq!(
+                insert_f32_vector(&ctx, index_ptr, 1, &point),
+                InsertResult::Success
+            );
+            assert_eq!(
+                store.get(ctx.term(Term::Vector).get(), &start_point_id.to_ne_bytes()),
+                Some(bytemuck::cast_slice::<f32, u8>(&point).to_vec()),
+            );
+            unsafe { drop_index(ctx.get(), index_ptr) };
+            let (index_ptr, ctx) = create();
+            assert!(!index_ptr.is_null());
+            assert_eq!(do_search(&ctx, index_ptr, &point, 1, None).0, [1]);
+            unsafe { drop_index(ctx.get(), index_ptr) };
         }
     }
 
@@ -630,6 +679,26 @@ mod tests {
             .collect();
         let term_count = terms[0].len();
 
+        let start_vector = [0.5f32; 2];
+        let mut start_neighbors = [0u32; MAX_DEGREE + 1];
+        start_neighbors[0] = VECTOR_COUNT as u32;
+        start_neighbors[MAX_DEGREE] = 1;
+        let mut start_terms = vec![
+            (
+                Term::Vector as u32,
+                bytemuck::cast_slice(&start_vector).to_vec(),
+            ),
+            (
+                Term::Neighbors as u32,
+                bytemuck::cast_slice(&start_neighbors).to_vec(),
+            ),
+        ];
+        if let Some(quantizer) = quantizer {
+            let mut quantized = vec![0u8; quantizer.bytes()];
+            quantizer.compress(&start_vector, &mut quantized).unwrap();
+            start_terms.push((Term::Quantized as u32, quantized));
+        }
+
         for by_term in [true, false] {
             let store = Store::new();
             let (index_ptr, ctx) = create_test_index_with_write_callback(
@@ -702,9 +771,30 @@ mod tests {
                 );
             }
 
+            let start_id = DEFAULT_START_POINT_ID.to_ne_bytes();
+            for (term, value) in &start_terms {
+                assert!(unsafe {
+                    import_term(
+                        ctx.get(),
+                        index_ptr,
+                        *term,
+                        start_id.as_ptr(),
+                        start_id.len(),
+                        value.as_ptr(),
+                        value.len(),
+                    )
+                });
+            }
+
             assert!(unsafe { can_import(ctx.get(), index_ptr) });
             finalize(&ctx, index_ptr);
             assert!(!unsafe { can_import(ctx.get(), index_ptr) });
+            for (term, value) in &start_terms {
+                assert_eq!(
+                    store.get(ctx.get() | u64::from(*term), &start_id).as_ref(),
+                    Some(value)
+                );
+            }
             for rejected_id in [1u32, 101] {
                 let id = rejected_id.to_ne_bytes();
                 for (term, value) in &terms[1] {

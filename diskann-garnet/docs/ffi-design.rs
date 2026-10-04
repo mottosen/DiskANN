@@ -127,6 +127,8 @@ type LogCallback = unsafe extern "C" fn(context: u64, message: *const u8, messag
 /// reduce_dim == 0 to indicate no reduction requested. Dimensionality reduction is not
 /// implemented, so this parameter is currently ignored.
 ///
+/// start_point_id is fixed for the index lifetime and must be supplied again on reopen.
+///
 /// metric_type is passed as a raw i32. Valid values are:
 /// - 0: Cosine
 /// - 1: InnerProduct
@@ -148,6 +150,7 @@ extern "C" fn create_index(
     metric_type: i32,
     l_build: u32,
     max_degree: u32,
+    start_point_id: u32,
     read_callback: ReadCallback,
     write_callback: WriteCallback,
     delete_callback: DeleteCallback,
