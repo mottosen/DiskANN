@@ -19,6 +19,7 @@ use crate::{
     algorithms::kmeans::{self, common::square_norm},
     cancel::Cancelation,
     multi_vector::BlockTransposed,
+    product::BasicTable,
     random::{BoxedRngBuilder, RngBuilder},
 };
 
@@ -75,6 +76,28 @@ impl SimplePivots {
         flatten(self.pivots(), self.ncenters, self.dim)
             .into_inner()
             .into()
+    }
+
+    pub fn as_basic(&self) -> BasicTable {
+        let data = self.flatten();
+
+        let mut i = 0;
+        let mut offsets: Vec<_> = self
+            .pivots
+            .iter()
+            .map(|p| {
+                let start = i;
+                i += p.ncols();
+                start
+            })
+            .collect();
+        offsets.push(i);
+
+        BasicTable::new(
+            rowmajor::Owned::try_from_data(data.into(), self.ncenters, self.dim).unwrap(),
+            crate::views::ChunkOffsets::new(offsets.into()).unwrap(),
+        )
+        .unwrap()
     }
 }
 

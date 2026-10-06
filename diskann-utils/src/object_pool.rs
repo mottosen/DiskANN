@@ -53,6 +53,13 @@ impl<T> ObjectPool<T> {
         }
     }
 
+    pub fn with_capacity(capacity: Option<usize>) -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            capacity,
+        }
+    }
+
     /// Create an object pool consisting of `initial_size` object initialized using
     /// [`TryAsPooled::try_create`].
     ///
