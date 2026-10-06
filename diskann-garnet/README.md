@@ -35,7 +35,12 @@ Redis always uses cosine distance, but many vector data sets use other metrics. 
 - `XNOQUANT_U8`: full precision 8-bit unsigned integer
 - `XBIN_I8`: binary quantization of 8-bit signed integer (using DiskANN's spherical quantizer based on RaBitQ)
 - `XBIN_U8`: binary quantization of 8-bit unsigned integer (using DiskANN's spherical quantizer based on RaBitQ)
-
+- `XSPHERICAL2`: 2-bit spherical quantization of 32-bit float
+- `XSPHERICAL2_I8`: 2-bit spherical quantization of 8-bit signed integer
+- `XSPHERICAL2_U8`: 2-bit spherical quantization of 8-bit unsigned integer
+- `XSPHERICAL4`: 4-bit spherical quantization of 32-bit float
+- `XSPHERICAL4_I8`: 4-bit spherical quantization of 8-bit signed integer
+- `XSPHERICAL4_U8`: 4-bit spherical quantization of 8-bit unsigned integer
 
 Currently there is a limit of `2^32 - 1` vectors in a single instance due to
 internal IDs being `u32`. This restriction will be lifted in the future.
