@@ -544,15 +544,14 @@ impl Product {
             .build()?;
 
         threadpool.install(|| -> anyhow::Result<_> {
-            let table = trainer
-                .train(
-                    data,
-                    ChunkOffsets::partition(NonZeroUsize::new(data.ncols()).unwrap(), self.chunks)?
-                        .as_view(),
-                    Parallelism::Rayon,
-                    &random::StdRngBuilder::new(self.seed),
-                    &DontCancel,
-                )?;
+            let table = trainer.train(
+                data,
+                ChunkOffsets::partition(NonZeroUsize::new(data.ncols()).unwrap(), self.chunks)?
+                    .as_view(),
+                Parallelism::Rayon,
+                &random::StdRngBuilder::new(self.seed),
+                &DontCancel,
+            )?;
 
             Ok(table)
         })

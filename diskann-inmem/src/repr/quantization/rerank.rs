@@ -152,9 +152,15 @@ pub(in crate::repr) fn test_rerank(
     post_process.post_process(&mut buffer).unwrap();
     let mut previous = f32::NEG_INFINITY;
     assert_eq!(buffer.len(), distances.len(), "{ctx}");
-    for neighbor in buffer.iter() {
+    for (pos, neighbor) in buffer.iter().enumerate() {
         let current = *neighbor.distance();
-        assert_eq!(current, distances[&SlotId(*neighbor.id())], "{ctx}",);
+        assert_eq!(
+            current,
+            distances[&SlotId(*neighbor.id())],
+            "failed in position {} of {:?} -- {ctx}",
+            pos,
+            buffer
+        );
 
         assert!(
             current >= previous,
@@ -185,18 +191,23 @@ mod tests {
 
     use std::assert_matches;
 
+    use diskann::utils::IntoUsize;
+
     use crate::{
-        num::{Capacity, MaxDegree},
+        counters::Counters,
+        num::{Capacity, LogicalId, MaxDegree, SlotId},
+        repr::test::Reference,
         store::Store,
     };
 
-    /// Create a reranker of dim 2 for the given config and metric.
+    const TEST_DIM: usize = 1;
+
+    /// Create a reranker of dim 5 for the given config and metric.
     fn make_store(rerank: Rerank, metric: Metric) -> (Reranker, Store<Optional<Simple>>) {
-        let dim = 2;
-        let (reranker, config) = Reranker::new_with_config(rerank, metric, dim);
+        let (reranker, config) = Reranker::new_with_config(rerank, metric, TEST_DIM);
 
         let store = Store::new(
-            store::Layout::new(Capacity::new(10), MaxDegree::new(0), 1),
+            store::Layout::new(Capacity::new(10), MaxDegree::new(0), 0),
             store::Config::new(),
             config,
         )
@@ -213,14 +224,110 @@ mod tests {
             store.slots().slots().is_none(),
             "Rerank::None should create empty optional slots"
         );
+
+        let query = std::slice::from_ref(&1.0);
+        let counters = Counters::new();
+
+        let post_processor = store
+            .guard(|slots, guard| reranker.post_process(query, &guard, slots, &counters.local()))
+            .unwrap();
+
+        assert!(post_processor.is_none());
     }
 
     #[test]
     fn test_reranker_f16() {
         for metric in Metric::all() {
             let (reranker, store) = make_store(Rerank::F16, metric);
+            let mut map = Reference::new(TEST_DIM);
 
+            // Insert the following values by logical id:
+            //
+            // LogicalID    Value   Deleted
+            //         5      2.5        No
+            //         4      1.5        No
+            //         3      0.5       Yes
+            //         2     -0.5       Yes
+            //         1     -1.5        No
+            //         0     -2.5       Yes
+            //
+            // The value -1.0 is used as the query, which generates the following values for
+            // the metrics being tested (note, we're using similarity scores here):
+            //
+            // LogicalId    Value    SquaredL2   InnerProduct    Cosine
+            //         5      2.5        12.25            2.5       2.0
+            //         4      1.5         6.25            1.5       2.0
+            //         1     -1.5         0.25           -1.5       0.0
 
+            let distances = match metric {
+                Metric::SquaredL2 => [
+                    (LogicalId(5), 12.25),
+                    (LogicalId(4), 6.25),
+                    (LogicalId(1), 0.25),
+                ],
+                Metric::InnerProduct => [
+                    (LogicalId(5), 2.5),
+                    (LogicalId(4), 1.5),
+                    (LogicalId(1), -1.5),
+                ],
+                Metric::Cosine => [
+                    (LogicalId(5), 2.0),
+                    (LogicalId(4), 2.0),
+                    (LogicalId(1), 0.0),
+                ],
+            };
+
+            // Insert
+            for i in (0..=5).rev() {
+                let v = (i as f32) - 2.5;
+
+                let mut exclusive = store.acquire().unwrap();
+
+                map.insert(
+                    LogicalId(i),
+                    SlotId(exclusive.slot()),
+                    std::slice::from_ref(&v),
+                );
+
+                reranker.store(std::slice::from_ref(&v), exclusive.data());
+
+                exclusive.publish();
+            }
+
+            // Delete
+            store
+                .retire(map.slot_id_for(LogicalId(3)).value().into_usize())
+                .unwrap();
+            store
+                .retire(map.slot_id_for(LogicalId(2)).value().into_usize())
+                .unwrap();
+            store
+                .retire(map.slot_id_for(LogicalId(0)).value().into_usize())
+                .unwrap();
+
+            let counters = Counters::new();
+            let query = std::slice::from_ref(&-1.0);
+
+            // Create the post-processor.
+            let mut post_process = store
+                .guard(|slots, guard| {
+                    reranker
+                        .post_process(query, &guard, slots, &counters.local())
+                        .unwrap()
+                })
+                .unwrap();
+
+            let expected: hashbrown::HashMap<_, _> = distances
+                .map(|(logical_id, distance)| (map.slot_id_for(logical_id), distance))
+                .into_iter()
+                .collect();
+
+            test_rerank(
+                &mut *post_process,
+                expected,
+                &[6, 5, 4, 3, 2, 1, 0].map(SlotId),
+                &format_args!("metric = {:?}", metric),
+            );
         }
     }
 }

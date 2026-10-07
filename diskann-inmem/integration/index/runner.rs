@@ -629,15 +629,13 @@ impl Test {
 
         // Step 1: Train a generic quantizer.
         let trainer = product::train::LightPQTrainingParameters::new(256, 2);
-        let table = trainer
-            .train(
-                data,
-                ChunkOffsets::partition(NonZeroUsize::new(data.ncols()).unwrap(), chunks)?
-                    .as_view(),
-                Parallelism::Sequential,
-                &random::StdRngBuilder::new(0xc0ff33),
-                &DontCancel,
-            )?;
+        let table = trainer.train(
+            data,
+            ChunkOffsets::partition(NonZeroUsize::new(data.ncols()).unwrap(), chunks)?.as_view(),
+            Parallelism::Sequential,
+            &random::StdRngBuilder::new(0xc0ff33),
+            &DontCancel,
+        )?;
 
         let start_point = rowmajor::Owned::row_vector(Box::from(
             <f32 as diskann_utils::sampling::medoid::ComputeMedoid>::compute_medoid(data),
