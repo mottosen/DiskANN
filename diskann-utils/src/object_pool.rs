@@ -53,6 +53,7 @@ impl<T> ObjectPool<T> {
         }
     }
 
+    /// Create an empty [`ObjectPool`] with the requested capacity.
     pub fn with_capacity(capacity: Option<usize>) -> Self {
         Self {
             queue: Mutex::new(VecDeque::new()),
@@ -577,6 +578,35 @@ mod tests {
         let pool = ObjectPool::<TestItem>::new(42, 1, None);
         let item = pool.get_ref(100);
         assert_eq!(*item.value, 100);
+    }
+
+    #[test]
+    fn test_pool_with_capacity() {
+        let pool = ObjectPool::<TestItem>::with_capacity(Some(4));
+        assert!(pool.is_empty());
+
+        let _ = pool.get_ref(100);
+        assert_eq!(pool.len(), 1);
+
+        {
+            let _v0 = pool.get_ref(100);
+            let _v1 = pool.get_ref(100);
+        }
+        assert_eq!(pool.len(), 2);
+
+        {
+            let _v0 = pool.get_ref(100);
+            let _v1 = pool.get_ref(100);
+            let _v2 = pool.get_ref(100);
+            let _v3 = pool.get_ref(100);
+            let _v4 = pool.get_ref(100);
+            let _v5 = pool.get_ref(100);
+        }
+        assert_eq!(
+            pool.len(),
+            4,
+            "pool should max out at the requested capacity."
+        );
     }
 
     #[test]

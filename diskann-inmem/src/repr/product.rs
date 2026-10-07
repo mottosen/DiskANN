@@ -27,16 +27,69 @@ use crate::{
     },
 };
 
+/// Distance metric to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Metric {
+    SquaredL2,
+    InnerProduct,
+    Cosine,
+}
+
+impl Metric {
+    fn as_internal_metric(&self) -> repr::internal::quantization::Metric {
+        use repr::internal::quantization::Metric as IMetric;
+        match self {
+            Self::SquaredL2 => IMetric::SquaredL2,
+            Self::InnerProduct => IMetric::InnerProduct,
+            Self::Cosine => IMetric::Cosine,
+        }
+    }
+}
+
+impl From<diskann_vector::distance::Metric> for Metric {
+    fn from(m: diskann_vector::distance::Metric) -> Self {
+        use diskann_vector::distance::Metric as VMetric;
+        match m {
+            VMetric::L2 => Self::SquaredL2,
+            VMetric::InnerProduct => Self::InnerProduct,
+            VMetric::Cosine => Self::Cosine,
+            VMetric::CosineNormalized => Self::Cosine,
+        }
+    }
+}
+
+/// Choose how data is going to be reranked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rerank {
+    /// No reranking will be performed and no space for higher precision vectors will be
+    /// allocated.
+    None,
+
+    /// Use 16-bit floating point numbers to store the higher precision representation.
+    /// These will be used automatically during search to rerank candidates.
+    F16,
+}
+
+impl Rerank {
+    fn as_internal_rerank(&self) -> repr::internal::quantization::Rerank {
+        use repr::internal::quantization::Rerank as IRerank;
+        match self {
+            Self::None => IRerank::None,
+            Self::F16 => IRerank::F16,
+        }
+    }
+}
+
 /// The configuration for a [`Product`] quantized representation.
 #[derive(Debug)]
 pub struct Config {
     table: tables::BasicTable,
     start_points: rowmajor::Owned<f32>,
-    metric: repr::quantization::Metric,
+    metric: repr::internal::quantization::Metric,
     layout: store::Layout,
     store: store::Config,
     lookahead: Option<NonZeroUsize>,
-    rerank: repr::quantization::Rerank,
+    rerank: repr::internal::quantization::Rerank,
     thread_hint: Option<NonZeroUsize>,
 }
 
@@ -70,11 +123,11 @@ impl Config {
     /// * The number of start points exceeds `u32::MAX`.
     pub fn new(
         table: tables::BasicTable,
-        metric: repr::quantization::Metric,
+        metric: Metric,
         capacity: Capacity,
         max_degree: MaxDegree,
         start_points: rowmajor::Owned<f32>,
-        rerank: repr::quantization::Rerank,
+        rerank: Rerank,
     ) -> Result<Self, ConfigError> {
         let dim = table.dim();
         if dim != start_points.ncols() {
@@ -93,11 +146,11 @@ impl Config {
         Ok(Self {
             table,
             start_points,
-            metric,
+            metric: metric.as_internal_metric(),
             layout: store::Layout::new(capacity, max_degree, num_start_points),
             store: store::Config::default(),
             lookahead: Some(DEFAULT_LOOKAHEAD),
-            rerank,
+            rerank: rerank.as_internal_rerank(),
             thread_hint: None,
         })
     }
@@ -198,9 +251,9 @@ pub struct Product {
     transposed: tables::TransposedTable,
     /// The PQ table representation used for pruning.
     padded: tables::PaddedTable,
-    metric: repr::quantization::Metric,
+    metric: repr::internal::quantization::Metric,
     lookahead: Option<NonZeroUsize>,
-    reranker: repr::quantization::rerank::Reranker,
+    reranker: repr::internal::quantization::Reranker,
 
     /// An object pool for distance lookup tables.
     ///
@@ -211,11 +264,11 @@ pub struct Product {
 impl Product {
     pub fn config(
         table: tables::BasicTable,
-        metric: repr::quantization::Metric,
+        metric: Metric,
         capacity: Capacity,
         max_degree: MaxDegree,
         start_points: rowmajor::Owned<f32>,
-        rerank: repr::quantization::Rerank,
+        rerank: Rerank,
     ) -> Result<Config, ConfigError> {
         Config::new(table, metric, capacity, max_degree, start_points, rerank)
     }
@@ -234,13 +287,14 @@ impl Product {
 
         let dim = table.dim();
         let (reranker, rerank_config) =
-            repr::quantization::rerank::Reranker::new_with_config(rerank, metric.into(), dim);
+            repr::internal::quantization::Reranker::new_with_config(rerank, metric, dim);
 
         let transposed = tables::TransposedTable::from_parts(
             table.view_pivots(),
             table.view_offsets().to_owned(),
         )
-        .unwrap();
+        .map_err(ANNError::new)
+        .context("this is a broken internal invariant - please report")?;
 
         let padded = tables::PaddedTable::from_basic(table.as_view());
 
@@ -300,7 +354,7 @@ impl Product {
         self.transposed.ncenters()
     }
 
-    fn metric(&self) -> repr::quantization::Metric {
+    fn metric(&self) -> repr::internal::quantization::Metric {
         self.metric
     }
 
@@ -516,12 +570,12 @@ enum DistanceTable {
 struct DistanceTableArgs {
     nchunks: usize,
     ncenters: usize,
-    metric: repr::quantization::Metric,
+    metric: repr::internal::quantization::Metric,
 }
 
 impl object_pool::AsPooled<DistanceTableArgs> for DistanceTable {
     fn create(args: DistanceTableArgs) -> Self {
-        use repr::quantization::Metric;
+        use repr::internal::quantization::Metric as IMetric;
 
         let DistanceTableArgs {
             nchunks,
@@ -530,15 +584,15 @@ impl object_pool::AsPooled<DistanceTableArgs> for DistanceTable {
         } = args;
 
         match metric {
-            Metric::SquaredL2 => {
+            IMetric::SquaredL2 => {
                 DistanceTable::SquaredL2(rowmajor::Owned::from_element(nchunks, ncenters, 0.0))
             }
 
-            Metric::InnerProduct => {
+            IMetric::InnerProduct => {
                 DistanceTable::InnerProduct(rowmajor::Owned::from_element(nchunks, ncenters, 0.0))
             }
 
-            Metric::Cosine => DistanceTable::Cosine {
+            IMetric::Cosine => DistanceTable::Cosine {
                 table: rowmajor::Owned::from_element(
                     nchunks,
                     ncenters,
@@ -550,7 +604,7 @@ impl object_pool::AsPooled<DistanceTableArgs> for DistanceTable {
     }
 
     fn modify(&mut self, args: DistanceTableArgs) {
-        use repr::quantization::Metric;
+        use repr::internal::quantization::Metric as IMetric;
 
         let DistanceTableArgs {
             nchunks,
@@ -562,13 +616,13 @@ impl object_pool::AsPooled<DistanceTableArgs> for DistanceTable {
             |nrows: usize, ncols: usize| -> bool { nrows == nchunks && ncols == ncenters };
 
         let good = match (&self, metric) {
-            (Self::SquaredL2(table), Metric::SquaredL2) => {
+            (Self::SquaredL2(table), IMetric::SquaredL2) => {
                 sizes_agree(table.nrows(), table.ncols())
             }
-            (Self::InnerProduct(table), Metric::InnerProduct) => {
+            (Self::InnerProduct(table), IMetric::InnerProduct) => {
                 sizes_agree(table.nrows(), table.ncols())
             }
-            (Self::Cosine { table, .. }, Metric::Cosine) => {
+            (Self::Cosine { table, .. }, IMetric::Cosine) => {
                 sizes_agree(table.nrows(), table.ncols())
             }
             _ => false,
@@ -615,7 +669,7 @@ struct Distance<'a> {
 }
 
 impl<'a> Distance<'a> {
-    fn new(table: &'a tables::PaddedTable, metric: repr::quantization::Metric) -> Self {
+    fn new(table: &'a tables::PaddedTable, metric: repr::internal::quantization::Metric) -> Self {
         Self {
             table,
             vtable: table.vtable(metric.into()),
@@ -649,10 +703,7 @@ mod tests {
     use crate::{
         counters::Counters,
         num::{LogicalId, SlotId},
-        repr::{
-            quantization::{Metric, Rerank},
-            test::{Reference, test_expand_beam, test_prune},
-        },
+        repr::test::{Reference, test_expand_beam, test_prune},
     };
 
     fn train_quantizer(
@@ -823,7 +874,10 @@ mod tests {
         let v2 = &reference[i2];
 
         // For computing distances, we rely on the PQ representation being exact.
-        let f = <f32 as DistanceProvider<f32>>::distance_comparer(metric.as_vector_metric(), None);
+        let f = <f32 as DistanceProvider<f32>>::distance_comparer(
+            metric.as_internal_metric().as_vector_metric(),
+            None,
+        );
 
         let distances = HashMap::from_iter([
             (s0, f.call(&query, v0)),
@@ -884,7 +938,7 @@ mod tests {
                     None => panic!("expected a post processor -- {}", ctx),
                 };
 
-                repr::quantization::rerank::test_rerank(
+                repr::internal::quantization::rerank::test_rerank(
                     post_process,
                     distances,
                     &[s0, s1, s3_deleted, s2, s4_deleted],
@@ -895,17 +949,17 @@ mod tests {
 
         // Prune
         {
-            let v00 = f.call(&v0, &v0);
-            let v01 = f.call(&v0, &v1);
-            let v02 = f.call(&v0, &v2);
+            let v00 = f.call(v0, v0);
+            let v01 = f.call(v0, v1);
+            let v02 = f.call(v0, v2);
 
             let v10 = v01;
-            let v11 = f.call(&v1, &v1);
-            let v12 = f.call(&v1, &v2);
+            let v11 = f.call(v1, v1);
+            let v12 = f.call(v1, v2);
 
             let v20 = v02;
             let v21 = v12;
-            let v22 = f.call(&v2, &v2);
+            let v22 = f.call(v2, v2);
 
             let distances = HashMap::from_iter([
                 ((s0, s0), v00),
@@ -1080,11 +1134,12 @@ mod tests {
     #[test]
     fn test_distance_table_as_pooled() {
         use object_pool::AsPooled;
+        use repr::internal::quantization::Metric as IMetric;
 
         let args = DistanceTableArgs {
             nchunks: 10,
             ncenters: 4,
-            metric: Metric::SquaredL2,
+            metric: IMetric::SquaredL2,
         };
         let mut table = DistanceTable::create(args);
 
@@ -1111,7 +1166,7 @@ mod tests {
         let args = DistanceTableArgs {
             nchunks: 9,
             ncenters: 5,
-            metric: Metric::SquaredL2,
+            metric: IMetric::SquaredL2,
         };
         table.modify(args);
         if let DistanceTable::SquaredL2(ref table) = table {
@@ -1125,7 +1180,7 @@ mod tests {
         let args = DistanceTableArgs {
             nchunks: 10,
             ncenters: 6,
-            metric: Metric::Cosine,
+            metric: IMetric::Cosine,
         };
         table.modify(args);
         if let DistanceTable::Cosine { ref table, .. } = table {
@@ -1138,7 +1193,7 @@ mod tests {
         let args = DistanceTableArgs {
             nchunks: 10,
             ncenters: 6,
-            metric: Metric::InnerProduct,
+            metric: IMetric::InnerProduct,
         };
         table.modify(args);
         if let DistanceTable::InnerProduct(ref table) = table {

@@ -3,13 +3,18 @@
  * Licensed under the MIT license.
  */
 
-use diskann::neighbor::Neighbor;
 use hashbrown::{HashMap, hash_map::Entry};
 
 use crate::{
-    num::{IdLimit, LogicalId, SlotId},
+    num::{LogicalId, SlotId},
     repr,
 };
+
+#[cfg(feature = "quantization")]
+use diskann::neighbor::Neighbor;
+
+#[cfg(feature = "quantization")]
+use crate::num::IdLimit;
 
 /// A test distance that simply sums scalar floating point values.
 #[derive(Debug)]
@@ -189,6 +194,7 @@ impl ReferenceLookup for LogicalId {
 /// * [`ExpandBeam::expand_beam`]: Provide all `ids` to `expand_beam`. Verify that ids not
 ///   present in `distances` get removed and all remaining ids are present and have a
 ///   distance value equal to the corresponding entry in `distances`.
+#[cfg(feature = "quantization")]
 pub(super) fn test_expand_beam(
     accessor: &dyn repr::ExpandBeam,
     id_limit: IdLimit,
@@ -274,6 +280,7 @@ pub(super) fn test_expand_beam(
 /// (0, 0), (0, 1), (0, 2)
 /// (1, 0), (1, 1), (1, 2)
 /// (2, 0), (2, 1), (2, 2)
+#[cfg(feature = "quantization")]
 pub(super) fn test_prune(
     accessor: &mut dyn repr::Prune,
     distances: HashMap<(SlotId, SlotId), f32>,

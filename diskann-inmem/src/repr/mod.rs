@@ -28,10 +28,6 @@ pub use full::{Full, FullPrecision};
 
 #[cfg(feature = "quantization")]
 #[cfg_attr(docsrs, doc(cfg(feature = "quantization")))]
-pub mod quantization;
-
-#[cfg(feature = "quantization")]
-#[cfg_attr(docsrs, doc(cfg(feature = "quantization")))]
 pub mod product;
 
 #[cfg(feature = "quantization")]

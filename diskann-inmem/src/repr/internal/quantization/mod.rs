@@ -3,12 +3,12 @@
  * Licensed under the MIT license.
  */
 
-pub(super) mod rerank;
-pub use rerank::Rerank;
+pub(in crate::repr) mod rerank;
+pub(in crate::repr) use rerank::{Rerank, Reranker};
 
 /// Distance metric used for quantization.
 #[derive(Debug, Clone, Copy)]
-pub enum Metric {
+pub(in crate::repr) enum Metric {
     SquaredL2,
     InnerProduct,
     Cosine,
@@ -22,7 +22,7 @@ impl Metric {
 }
 
 impl Metric {
-    pub(super) fn as_vector_metric(&self) -> diskann_vector::distance::Metric {
+    pub(in crate::repr) fn as_vector_metric(&self) -> diskann_vector::distance::Metric {
         use diskann_vector::distance::Metric as VMetric;
 
         match self {

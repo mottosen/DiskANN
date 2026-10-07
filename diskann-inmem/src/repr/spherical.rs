@@ -31,6 +31,28 @@ use crate::{
     },
 };
 
+/// Choose how data is going to be reranked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rerank {
+    /// No reranking will be performed and no space for higher precision vectors will be
+    /// allocated.
+    None,
+
+    /// Use 16-bit floating point numbers to store the higher precision representation.
+    /// These will be used automatically during search to rerank candidates.
+    F16,
+}
+
+impl Rerank {
+    fn as_internal_rerank(&self) -> repr::internal::quantization::Rerank {
+        use repr::internal::quantization::Rerank as IRerank;
+        match self {
+            Self::None => IRerank::None,
+            Self::F16 => IRerank::F16,
+        }
+    }
+}
+
 /// The configuration for a [`Spherical`] representation.
 #[derive(Debug)]
 pub struct Config {
@@ -41,7 +63,7 @@ pub struct Config {
     layout: store::Layout,
     store: store::Config,
     lookahead: Option<NonZeroUsize>,
-    rerank: repr::quantization::Rerank,
+    rerank: repr::internal::quantization::Rerank,
 }
 
 const DEFAULT_LOOKAHEAD: NonZeroUsize = NonZeroUsize::new(16).unwrap();
@@ -76,7 +98,7 @@ impl Config {
         capacity: Capacity,
         max_degree: MaxDegree,
         start_points: rowmajor::Owned<f32>,
-        rerank: repr::quantization::Rerank,
+        rerank: Rerank,
     ) -> Result<Self, ConfigError> {
         let quantizer_dim = quantizer.full_dim();
         if quantizer_dim != start_points.ncols() {
@@ -101,7 +123,7 @@ impl Config {
             layout: store::Layout::new(capacity, max_degree, num_start_points),
             store: store::Config::default(),
             lookahead: Some(DEFAULT_LOOKAHEAD),
-            rerank,
+            rerank: rerank.as_internal_rerank(),
         })
     }
 
@@ -193,7 +215,7 @@ pub struct Spherical {
     // trait-object function call when accessing.
     full_dim: usize,
     lookahead: Option<NonZeroUsize>,
-    reranker: repr::quantization::rerank::Reranker,
+    reranker: repr::internal::quantization::Reranker,
 }
 
 impl Spherical {
@@ -209,7 +231,7 @@ impl Spherical {
         capacity: Capacity,
         max_degree: MaxDegree,
         start_points: rowmajor::Owned<f32>,
-        rerank: repr::quantization::Rerank,
+        rerank: Rerank,
     ) -> Result<Config, ConfigError> {
         Config::new(quantizer, capacity, max_degree, start_points, rerank)
     }
@@ -228,7 +250,7 @@ impl Spherical {
         } = config;
 
         let full_dim = quantizer.full_dim();
-        let (reranker, rerank_config) = repr::quantization::rerank::Reranker::new_with_config(
+        let (reranker, rerank_config) = repr::internal::quantization::Reranker::new_with_config(
             rerank,
             quantizer.metric().into(),
             full_dim,
@@ -526,10 +548,7 @@ mod tests {
     use crate::{
         counters::Counters,
         num::{LogicalId, SlotId},
-        repr::{
-            quantization::Rerank,
-            test::{Reference, test_expand_beam, test_prune},
-        },
+        repr::test::{Reference, test_expand_beam, test_prune},
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -803,7 +822,7 @@ mod tests {
                 };
 
                 let f = <f32 as DistanceProvider<f32>>::distance_comparer(
-                    repr::quantization::Metric::from(metric).as_vector_metric(),
+                    repr::internal::quantization::Metric::from(metric).as_vector_metric(),
                     None,
                 );
 
@@ -813,7 +832,7 @@ mod tests {
                     (s2, f.call(&query, v2)),
                 ]);
 
-                repr::quantization::rerank::test_rerank(
+                repr::internal::quantization::rerank::test_rerank(
                     post_process,
                     distances,
                     &[s0, s1, s3_deleted, s2, s4_deleted],

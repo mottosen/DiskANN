@@ -941,7 +941,7 @@ impl Benchmark for SphericalBuild {
             Capacity::new(num_points),
             MaxDegree::new(input.build.config.max_degree().get()),
             start,
-            repr::quantization::Rerank::F16,
+            repr::spherical::Rerank::F16,
         )?;
 
         let provider = Provider::<_, u32>::new(config)?;
@@ -1083,7 +1083,7 @@ impl Benchmark for ProductBuild {
             Capacity::new(num_points),
             MaxDegree::new(input.build.config.max_degree().get()),
             start,
-            repr::quantization::Rerank::F16,
+            repr::product::Rerank::F16,
         )?
         .thread_hint(Some(input.build.num_threads));
 

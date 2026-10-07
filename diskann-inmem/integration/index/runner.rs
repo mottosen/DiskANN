@@ -292,11 +292,20 @@ mod quantization {
         }
     }
 
-    impl From<Rerank> for inmem::repr::quantization::Rerank {
+    impl From<Rerank> for inmem::repr::spherical::Rerank {
         fn from(rerank: Rerank) -> Self {
             match rerank {
-                Rerank::None => inmem::repr::quantization::Rerank::None,
-                Rerank::F16 => inmem::repr::quantization::Rerank::F16,
+                Rerank::None => inmem::repr::spherical::Rerank::None,
+                Rerank::F16 => inmem::repr::spherical::Rerank::F16,
+            }
+        }
+    }
+
+    impl From<Rerank> for inmem::repr::product::Rerank {
+        fn from(rerank: Rerank) -> Self {
+            match rerank {
+                Rerank::None => inmem::repr::product::Rerank::None,
+                Rerank::F16 => inmem::repr::product::Rerank::F16,
             }
         }
     }
@@ -629,9 +638,13 @@ impl Test {
 
         // Step 1: Train a generic quantizer.
         let trainer = product::train::LightPQTrainingParameters::new(256, 2);
+        let Some(dim) = NonZeroUsize::new(data.ncols()) else {
+            anyhow::bail!("cannot compress a zero dimensional dataset");
+        };
+
         let table = trainer.train(
             data,
-            ChunkOffsets::partition(NonZeroUsize::new(data.ncols()).unwrap(), chunks)?.as_view(),
+            ChunkOffsets::partition(dim, chunks)?.as_view(),
             Parallelism::Sequential,
             &random::StdRngBuilder::new(0xc0ff33),
             &DontCancel,

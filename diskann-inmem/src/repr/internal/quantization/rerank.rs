@@ -10,7 +10,10 @@ use crate::{
     counters::LocalCounters,
     epoch,
     num::Bytes,
-    repr::{self, internal::Calf, quantization::Metric},
+    repr::{
+        self,
+        internal::{Calf, quantization::Metric},
+    },
     store::{
         self,
         optional::Optional,
@@ -20,7 +23,7 @@ use crate::{
 
 /// Choose how data is going to be reranked.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Rerank {
+pub(in crate::repr) enum Rerank {
     /// No reranking will be performed and no space for higher precision vectors will be
     /// allocated.
     None,
@@ -87,6 +90,10 @@ impl Reranker {
     ///
     /// This requires that `slots` is the [`store::slots::Slots`] created from the
     /// configuration returned in [`Self::new_with_config`].
+    #[expect(
+        clippy::panic,
+        reason = "this is an internal method that must be set up correctly"
+    )]
     pub(in crate::repr) fn post_process<'a>(
         &'a self,
         query: &'a [f32],
@@ -116,6 +123,10 @@ impl Reranker {
     ///
     /// If it is `Some`, this function may panic if its length is not consistent with the
     /// original configuration.
+    #[expect(
+        clippy::panic,
+        reason = "this is an internal method that must be set up correctly"
+    )]
     pub(in crate::repr) fn store(&self, v: &[f32], buf: &mut Option<simple::Exclusive<'_>>) {
         match (self, buf) {
             (Self::None, None) => {}
