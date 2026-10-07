@@ -552,8 +552,7 @@ impl Product {
                     Parallelism::Rayon,
                     &random::StdRngBuilder::new(self.seed),
                     &DontCancel,
-                )?
-                .as_basic();
+                )?;
 
             Ok(table)
         })
@@ -1086,7 +1085,7 @@ impl Benchmark for ProductBuild {
             MaxDegree::new(input.build.config.max_degree().get()),
             start,
             repr::quantization::Rerank::F16,
-        )
+        )?
         .thread_hint(Some(input.build.num_threads));
 
         let provider = Provider::<_, u32>::new(config)?;

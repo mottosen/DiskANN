@@ -637,8 +637,7 @@ impl Test {
                 Parallelism::Sequential,
                 &random::StdRngBuilder::new(0xc0ff33),
                 &DontCancel,
-            )?
-            .as_basic();
+            )?;
 
         let start_point = rowmajor::Owned::row_vector(Box::from(
             <f32 as diskann_utils::sampling::medoid::ComputeMedoid>::compute_medoid(data),

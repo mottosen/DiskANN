@@ -683,7 +683,6 @@ mod tests {
                 &DontCancel,
             )
             .unwrap()
-            .as_basic()
     }
 
     /// See the description in [`make_test_repr`].
