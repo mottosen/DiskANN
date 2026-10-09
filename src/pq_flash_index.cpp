@@ -502,10 +502,6 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::use_medoids
     alloc_aligned(((void **)&_centroid_data), _num_medoids * _aligned_dim * sizeof(float), 32);
     std::memset(_centroid_data, 0, _num_medoids * _aligned_dim * sizeof(float));
 
-    // borrow ctx
-    ScratchStoreManager<SSDThreadData<T>> manager(this->_thread_data);
-    auto data = manager.scratch_space();
-    IOContext &ctx = data->ctx;
     diskann::cout << "Loading centroid data from medoids vector data of " << _num_medoids << " medoid(s)" << std::endl;
 
     std::vector<uint32_t> nodes_to_read;
