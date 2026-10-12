@@ -53,7 +53,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                       const uint32_t num_threads, const uint32_t recall_at, const uint32_t beamwidth,
                       const uint32_t num_nodes_to_cache, const uint32_t search_io_limit,
                       const std::vector<uint32_t> &Lvec, const float fail_if_recall_below,
-                      const std::vector<std::string> &query_filters, const bool use_reorder_data = false)
+                      const std::vector<std::string> &query_filters, const bool use_reorder_data = false,
+                      const bool dump_query_stats = false)
 {
     diskann::cout << "Search parameters: #threads: " << num_threads << ", ";
     if (beamwidth <= 0)
@@ -287,6 +288,15 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
         else
             diskann::cout << std::endl;
+
+        // Before the delete, which is the only reason this array has ever been unavailable: it is
+        // filled per query and then collapsed to a mean and five percentiles. One file per L,
+        // named like the result bins below so a leaf's outputs sort together.
+        if (dump_query_stats)
+        {
+            diskann::save_query_stats_csv(result_output_prefix + "_" + std::to_string(L) + "_queries.csv",
+                                          stats, query_num);
+        }
         delete[] stats;
     }
 
@@ -317,6 +327,7 @@ int main(int argc, char **argv)
     uint32_t num_threads, K, W, num_nodes_to_cache, search_io_limit;
     std::vector<uint32_t> Lvec;
     bool use_reorder_data = false;
+    bool dump_query_stats = false;
     float fail_if_recall_below = 0.0f;
 
     po::options_description desc{
@@ -372,6 +383,12 @@ int main(int argc, char **argv)
         optional_configs.add_options()("fail_if_recall_below",
                                        po::value<float>(&fail_if_recall_below)->default_value(0.0f),
                                        program_options_utils::FAIL_IF_RECALL_BELOW);
+        optional_configs.add_options()("query_stats", po::bool_switch()->default_value(false),
+                                       "Write one row per query to <result_path>_<L>_queries.csv: the "
+                                       "query's CLOCK_MONOTONIC [start_ns, end_ns] plus its own total_us, "
+                                       "io_us, cpu_us, n_ios, n_cmps, n_cache_hits and n_hops. Off by "
+                                       "default; the search path is unchanged either way apart from two "
+                                       "clock reads per query.  Default value: false");
 
         // Merge required and optional parameters
         desc.add(required_configs).add(optional_configs);
@@ -386,6 +403,8 @@ int main(int argc, char **argv)
         po::notify(vm);
         if (vm["use_reorder_data"].as<bool>())
             use_reorder_data = true;
+        if (vm["query_stats"].as<bool>())
+            dump_query_stats = true;
     }
     catch (const std::exception &ex)
     {
@@ -451,15 +470,18 @@ int main(int argc, char **argv)
             if (data_type == std::string("float"))
                 return search_disk_index<float, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
-                    num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data);
+                    num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
+                    dump_query_stats);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
-                    num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data);
+                    num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
+                    dump_query_stats);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
-                    num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data);
+                    num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
+                    dump_query_stats);
             else
             {
                 std::cerr << "Unsupported data type. Use float or int8 or uint8" << std::endl;
@@ -471,15 +493,18 @@ int main(int argc, char **argv)
             if (data_type == std::string("float"))
                 return search_disk_index<float>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                 num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
-                                                fail_if_recall_below, query_filters, use_reorder_data);
+                                                fail_if_recall_below, query_filters, use_reorder_data,
+                                                dump_query_stats);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                  num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
-                                                 fail_if_recall_below, query_filters, use_reorder_data);
+                                                 fail_if_recall_below, query_filters, use_reorder_data,
+                                                 dump_query_stats);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                   num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
-                                                  fail_if_recall_below, query_filters, use_reorder_data);
+                                                  fail_if_recall_below, query_filters, use_reorder_data,
+                                                  dump_query_stats);
             else
             {
                 std::cerr << "Unsupported data type. Use float or int8 or uint8" << std::endl;

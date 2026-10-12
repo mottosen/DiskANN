@@ -1338,6 +1338,11 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         diskann::pq_dist_lookup(pq_coord_scratch, n_ids, this->_n_chunks, pq_dists, dists_out);
     };
     Timer query_timer, io_timer, cpu_timer;
+    // Beside query_timer's construction, so the stamp and total_us bound the same span.
+    if (stats != nullptr)
+    {
+        stats->start_ns = monotonic_ns();
+    }
 
     tsl::robin_set<uint64_t> &visited = query_scratch->visited;
     NeighborPriorityQueue &retset = query_scratch->retset;
@@ -1682,6 +1687,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
     if (stats != nullptr)
     {
         stats->total_us = (float)query_timer.elapsed();
+        stats->end_ns = monotonic_ns();
     }
 }
 
