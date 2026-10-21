@@ -54,7 +54,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                       const uint32_t num_nodes_to_cache, const uint32_t search_io_limit,
                       const std::vector<uint32_t> &Lvec, const float fail_if_recall_below,
                       const std::vector<std::string> &query_filters, const bool use_reorder_data = false,
-                      const bool dump_query_stats = false)
+                      const bool dump_query_stats = false, const double search_seconds = 0)
 {
     diskann::cout << "Search parameters: #threads: " << num_threads << ", ";
     if (beamwidth <= 0)
@@ -217,58 +217,139 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         else
             optimized_beamwidth = beamwidth;
 
-        query_result_ids[test_id].resize(recall_at * query_num);
-        query_result_dists[test_id].resize(recall_at * query_num);
+        diskann::QueryStats *stats = nullptr;
+        uint64_t n_stats = query_num; // rows in `stats`: query_num for one pass, served under a deadline
+        std::vector<uint64_t> draws;  // per row, its global draw index g -- deadline mode only
+        double qps = 0, search_s = 0;
 
-        auto stats = new diskann::QueryStats[query_num];
+        if (search_seconds > 0)
+        {
+            // A PURE DEADLINE over the query set, cycled: the timed concurrent phase VectorDBBench
+            // runs (mp_runner.py), with no floor and no pass alignment -- it serves whatever fits.
+            // Each thread draws the next global index g from one counter, searches query
+            // g % nq, and checks the clock only between queries, so the last query of each thread
+            // finishes past the deadline and elapsed is measured to that last completion.
+            //
+            // NO RECALL AND NO RESULT IDS. A deadline can fall before every query has been
+            // claimed, and recall computed over all query_num rows would then count the unclaimed
+            // zero slots as misses -- a plausible low number rather than an error. So ids and
+            // dists go to per-thread K-sized scratch and are discarded; recall belongs to a
+            // separate one-pass invocation (main() refuses a gt_file here).
+            const uint64_t deadline_ns = (uint64_t)(search_seconds * 1e9);
+            const int n_slots = omp_get_max_threads();
+            std::vector<std::vector<diskann::QueryStats>> slot_stats(n_slots);
+            std::vector<std::vector<uint64_t>> slot_draws(n_slots);
+            std::atomic<uint64_t> next{0};
 
-        std::vector<uint64_t> query_result_ids_64(recall_at * query_num);
-        auto s = std::chrono::high_resolution_clock::now();
+            const uint64_t t0 = diskann::monotonic_ns();
+#pragma omp parallel
+            {
+                const int tid = omp_get_thread_num();
+                std::vector<uint64_t> ids(recall_at);
+                std::vector<float> dists(recall_at);
+                std::vector<diskann::QueryStats> &my_stats = slot_stats[tid];
+                std::vector<uint64_t> &my_draws = slot_draws[tid];
+                my_stats.reserve(4096);
+                my_draws.reserve(4096);
+
+                while (diskann::monotonic_ns() - t0 < deadline_ns)
+                {
+                    const uint64_t g = next.fetch_add(1, std::memory_order_relaxed);
+                    const int64_t i = (int64_t)(g % query_num);
+                    diskann::QueryStats qs;
+                    if (!filtered_search)
+                    {
+                        _pFlashIndex->cached_beam_search(query + (i * query_aligned_dim), recall_at, L, ids.data(),
+                                                         dists.data(), optimized_beamwidth, use_reorder_data, &qs);
+                    }
+                    else
+                    {
+                        LabelT label_for_search = _pFlashIndex->get_converted_label(
+                            query_filters.size() == 1 ? query_filters[0] : query_filters[i]);
+                        _pFlashIndex->cached_beam_search(query + (i * query_aligned_dim), recall_at, L, ids.data(),
+                                                         dists.data(), optimized_beamwidth, true, label_for_search,
+                                                         use_reorder_data, &qs);
+                    }
+                    my_stats.push_back(qs);
+                    my_draws.push_back(g);
+                }
+            }
+            const uint64_t t1 = diskann::monotonic_ns();
+            search_s = (double)(t1 - t0) / 1e9;
+
+            // Concatenated in draw order, so the CSV reads as the sequence the counter issued.
+            std::vector<std::pair<uint64_t, const diskann::QueryStats *>> order;
+            for (int t = 0; t < n_slots; t++)
+                for (size_t r = 0; r < slot_stats[t].size(); r++)
+                    order.emplace_back(slot_draws[t][r], &slot_stats[t][r]);
+            std::sort(order.begin(), order.end(),
+                      [](const auto &a, const auto &b) { return a.first < b.first; });
+
+            n_stats = order.size();
+            stats = new diskann::QueryStats[n_stats];
+            draws.resize(n_stats);
+            for (uint64_t r = 0; r < n_stats; r++)
+            {
+                draws[r] = order[r].first;
+                stats[r] = *order[r].second;
+            }
+            qps = (1.0 * n_stats) / search_s;
+        }
+        else
+        {
+            query_result_ids[test_id].resize(recall_at * query_num);
+            query_result_dists[test_id].resize(recall_at * query_num);
+
+            stats = new diskann::QueryStats[query_num];
+
+            std::vector<uint64_t> query_result_ids_64(recall_at * query_num);
+            auto s = std::chrono::high_resolution_clock::now();
 
 #pragma omp parallel for schedule(dynamic, 1)
-        for (int64_t i = 0; i < (int64_t)query_num; i++)
-        {
-            if (!filtered_search)
+            for (int64_t i = 0; i < (int64_t)query_num; i++)
             {
-                _pFlashIndex->cached_beam_search(query + (i * query_aligned_dim), recall_at, L,
-                                                 query_result_ids_64.data() + (i * recall_at),
-                                                 query_result_dists[test_id].data() + (i * recall_at),
-                                                 optimized_beamwidth, use_reorder_data, stats + i);
-            }
-            else
-            {
-                LabelT label_for_search;
-                if (query_filters.size() == 1)
-                { // one label for all queries
-                    label_for_search = _pFlashIndex->get_converted_label(query_filters[0]);
+                if (!filtered_search)
+                {
+                    _pFlashIndex->cached_beam_search(query + (i * query_aligned_dim), recall_at, L,
+                                                     query_result_ids_64.data() + (i * recall_at),
+                                                     query_result_dists[test_id].data() + (i * recall_at),
+                                                     optimized_beamwidth, use_reorder_data, stats + i);
                 }
                 else
-                { // one label for each query
-                    label_for_search = _pFlashIndex->get_converted_label(query_filters[i]);
+                {
+                    LabelT label_for_search;
+                    if (query_filters.size() == 1)
+                    { // one label for all queries
+                        label_for_search = _pFlashIndex->get_converted_label(query_filters[0]);
+                    }
+                    else
+                    { // one label for each query
+                        label_for_search = _pFlashIndex->get_converted_label(query_filters[i]);
+                    }
+                    _pFlashIndex->cached_beam_search(
+                        query + (i * query_aligned_dim), recall_at, L, query_result_ids_64.data() + (i * recall_at),
+                        query_result_dists[test_id].data() + (i * recall_at), optimized_beamwidth, true,
+                        label_for_search, use_reorder_data, stats + i);
                 }
-                _pFlashIndex->cached_beam_search(
-                    query + (i * query_aligned_dim), recall_at, L, query_result_ids_64.data() + (i * recall_at),
-                    query_result_dists[test_id].data() + (i * recall_at), optimized_beamwidth, true, label_for_search,
-                    use_reorder_data, stats + i);
             }
-        }
-        auto e = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> diff = e - s;
-        double qps = (1.0 * query_num) / (1.0 * diff.count());
+            auto e = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = e - s;
+            qps = (1.0 * query_num) / (1.0 * diff.count());
 
-        diskann::convert_types<uint64_t, uint32_t>(query_result_ids_64.data(), query_result_ids[test_id].data(),
-                                                   query_num, recall_at);
+            diskann::convert_types<uint64_t, uint32_t>(query_result_ids_64.data(),
+                                                       query_result_ids[test_id].data(), query_num, recall_at);
+        }
 
         auto mean_latency = diskann::get_mean_stats<float>(
-            stats, query_num, [](const diskann::QueryStats &stats) { return stats.total_us; });
+            stats, n_stats, [](const diskann::QueryStats &stats) { return stats.total_us; });
 
         auto latency_999 = diskann::get_percentile_stats<float>(
-            stats, query_num, 0.999, [](const diskann::QueryStats &stats) { return stats.total_us; });
+            stats, n_stats, 0.999, [](const diskann::QueryStats &stats) { return stats.total_us; });
 
-        auto mean_ios = diskann::get_mean_stats<uint32_t>(stats, query_num,
+        auto mean_ios = diskann::get_mean_stats<uint32_t>(stats, n_stats,
                                                           [](const diskann::QueryStats &stats) { return stats.n_ios; });
 
-        auto mean_cpuus = diskann::get_mean_stats<float>(stats, query_num,
+        auto mean_cpuus = diskann::get_mean_stats<float>(stats, n_stats,
                                                          [](const diskann::QueryStats &stats) { return stats.cpu_us; });
 
         double recall = 0;
@@ -289,15 +370,33 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         else
             diskann::cout << std::endl;
 
+        // How much of the query set the deadline covered. Five tokens against the table's seven
+        // or more, so a parser reading data rows by column count skips it.
+        if (search_seconds > 0)
+        {
+            diskann::cout << "L0_SEARCH L=" << L << " served=" << n_stats << " cycles=" << std::setprecision(3)
+                          << (double)n_stats / (double)query_num << " search_s=" << search_s
+                          << std::setprecision(2) << std::endl;
+        }
+
         // Before the delete, which is the only reason this array has ever been unavailable: it is
         // filled per query and then collapsed to a mean and five percentiles. One file per L,
         // named like the result bins below so a leaf's outputs sort together.
         if (dump_query_stats)
         {
             diskann::save_query_stats_csv(result_output_prefix + "_" + std::to_string(L) + "_queries.csv",
-                                          stats, query_num);
+                                          stats, n_stats, draws.empty() ? nullptr : draws.data(), query_num);
         }
         delete[] stats;
+    }
+
+    // A deadline run kept no result ids (above), so there is nothing to save.
+    if (search_seconds > 0)
+    {
+        diskann::aligned_free(query);
+        if (warmup != nullptr)
+            diskann::aligned_free(warmup);
+        return 0;
     }
 
     diskann::cout << "Done searching. Now saving results " << std::endl;
@@ -328,6 +427,7 @@ int main(int argc, char **argv)
     std::vector<uint32_t> Lvec;
     bool use_reorder_data = false;
     bool dump_query_stats = false;
+    double search_seconds = 0;
     float fail_if_recall_below = 0.0f;
 
     po::options_description desc{
@@ -389,6 +489,12 @@ int main(int argc, char **argv)
                                        "io_us, cpu_us, n_ios, n_cmps, n_cache_hits and n_hops. Off by "
                                        "default; the search path is unchanged either way apart from two "
                                        "clock reads per query.  Default value: false");
+        optional_configs.add_options()("search_seconds", po::value<double>(&search_seconds)->default_value(0),
+                                       "Search for this many seconds instead of one pass: threads cycle the "
+                                       "query set and stop drawing at the deadline, serving whatever fits. "
+                                       "Reports QPS and latency only -- no recall and no result files, "
+                                       "so it refuses --gt_file. 0 is one pass, the upstream behaviour.  "
+                                       "Default value: 0");
 
         // Merge required and optional parameters
         desc.add(required_configs).add(optional_configs);
@@ -405,6 +511,21 @@ int main(int argc, char **argv)
             use_reorder_data = true;
         if (vm["query_stats"].as<bool>())
             dump_query_stats = true;
+        // A timed run computes no recall (search_disk_index explains why), so a ground truth or a
+        // recall bar passed alongside one would be silently ignored. Refused instead.
+        if (search_seconds < 0)
+        {
+            std::cerr << "--search_seconds must be >= 0" << std::endl;
+            return -1;
+        }
+        if (search_seconds > 0 && (gt_file != std::string("null") || fail_if_recall_below > 0))
+        {
+            std::cerr << "--search_seconds measures throughput only and computes no recall; "
+                         "drop --gt_file and --fail_if_recall_below, and take recall from a "
+                         "one-pass run (--search_seconds 0)."
+                      << std::endl;
+            return -1;
+        }
     }
     catch (const std::exception &ex)
     {
@@ -471,17 +592,17 @@ int main(int argc, char **argv)
                 return search_disk_index<float, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
                     num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
-                    dump_query_stats);
+                    dump_query_stats, search_seconds);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
                     num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
-                    dump_query_stats);
+                    dump_query_stats, search_seconds);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
                     num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
-                    dump_query_stats);
+                    dump_query_stats, search_seconds);
             else
             {
                 std::cerr << "Unsupported data type. Use float or int8 or uint8" << std::endl;
@@ -494,17 +615,17 @@ int main(int argc, char **argv)
                 return search_disk_index<float>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                 num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
                                                 fail_if_recall_below, query_filters, use_reorder_data,
-                                                dump_query_stats);
+                                                dump_query_stats, search_seconds);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                  num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
                                                  fail_if_recall_below, query_filters, use_reorder_data,
-                                                 dump_query_stats);
+                                                 dump_query_stats, search_seconds);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                   num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
                                                   fail_if_recall_below, query_filters, use_reorder_data,
-                                                  dump_query_stats);
+                                                  dump_query_stats, search_seconds);
             else
             {
                 std::cerr << "Unsupported data type. Use float or int8 or uint8" << std::endl;

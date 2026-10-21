@@ -77,7 +77,14 @@ struct QueryStats
 //
 // CSV rather than a .bin: this is a handful of columns over the query count, read once by a
 // script, and save_bin's shape is one matrix of one type. The consumer converts it.
-inline void save_query_stats_csv(const std::string &path, const QueryStats *stats, uint64_t len)
+//
+// QUERY_ID AND CYCLE COME FROM THE DRAW, NOT FROM THE ROW. Under --search_seconds the query set
+// is cycled until a deadline and the rows are whatever was served, so row r is not query r % nq:
+// threads finish out of draw order, and a deadline does not land on a pass boundary. `draws`
+// carries each row's global draw index g, and the query is g % nq on cycle g / nq. With no
+// draws (one pass) row i IS query i on cycle 0, which is the output this function always wrote.
+inline void save_query_stats_csv(const std::string &path, const QueryStats *stats, uint64_t len,
+                                 const uint64_t *draws = nullptr, uint64_t nq = 0)
 {
     std::ofstream out(path);
     if (!out.is_open())
@@ -86,13 +93,15 @@ inline void save_query_stats_csv(const std::string &path, const QueryStats *stat
                   << std::endl;
         return;
     }
-    out << "query_id,start_ns,end_ns,total_us,io_us,cpu_us,n_ios,n_cmps,n_cache_hits,n_hops\n";
+    out << "query_id,cycle,start_ns,end_ns,total_us,io_us,cpu_us,n_ios,n_cmps,n_cache_hits,n_hops\n";
     for (uint64_t i = 0; i < len; i++)
     {
         const QueryStats &q = stats[i];
-        out << i << "," << q.start_ns << "," << q.end_ns << "," << q.total_us << "," << q.io_us << ","
-            << q.cpu_us << "," << q.n_ios << "," << q.n_cmps << "," << q.n_cache_hits << "," << q.n_hops
-            << "\n";
+        const uint64_t qid = draws != nullptr ? draws[i] % nq : i;
+        const uint64_t cycle = draws != nullptr ? draws[i] / nq : 0;
+        out << qid << "," << cycle << "," << q.start_ns << "," << q.end_ns << "," << q.total_us << ","
+            << q.io_us << "," << q.cpu_us << "," << q.n_ios << "," << q.n_cmps << "," << q.n_cache_hits
+            << "," << q.n_hops << "\n";
     }
     out.close();
     std::cout << "Wrote per-query stats: " << path << " (" << len << " queries)" << std::endl;
