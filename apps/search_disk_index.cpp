@@ -178,9 +178,15 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     diskann::cout.precision(2);
 
     std::string recall_string = "Recall@" + std::to_string(recall_at);
+    // P50/P95/P99 are added to upstream's mean and 99.9. The cross-rung set the ladder compares
+    // is mean + p50/p95/p99, because that is the set every rung can produce: knowhere's driver
+    // reports exactly those and VectorDBBench's concurrent phase reports mean/p95/p99 with no
+    // median. 99.9 stays because it is already here and costs another sort of the same vector,
+    // but it exists at this rung and the next only, so it is never an axis across rungs.
     diskann::cout << std::setw(6) << "L" << std::setw(12) << "Beamwidth" << std::setw(16) << "QPS" << std::setw(16)
-                  << "Mean Latency" << std::setw(16) << "99.9 Latency" << std::setw(16) << "Mean IOs" << std::setw(16)
-                  << "CPU (s)";
+                  << "Mean Latency" << std::setw(16) << "P50 Latency" << std::setw(16) << "P95 Latency"
+                  << std::setw(16) << "P99 Latency" << std::setw(16) << "99.9 Latency" << std::setw(16)
+                  << "Mean IOs" << std::setw(16) << "CPU (s)";
     if (calc_recall_flag)
     {
         diskann::cout << std::setw(16) << recall_string << std::endl;
@@ -189,6 +195,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         diskann::cout << std::endl;
     diskann::cout << "==============================================================="
                      "======================================================="
+                     "================================================"
                   << std::endl;
 
     std::vector<std::vector<uint32_t>> query_result_ids(Lvec.size());
@@ -343,6 +350,19 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         auto mean_latency = diskann::get_mean_stats<float>(
             stats, n_stats, [](const diskann::QueryStats &stats) { return stats.total_us; });
 
+        // One definition for every percentile this rung prints: get_percentile_stats is
+        // nearest-rank, vals[floor(p * n)], which is also what l1_search's own `pct` does. Any
+        // script that recomputes one from the per-query dump must use the same rule -- numpy and
+        // polars interpolate by default, and the two disagree by a rank.
+        auto latency_50 = diskann::get_percentile_stats<float>(
+            stats, n_stats, 0.50, [](const diskann::QueryStats &stats) { return stats.total_us; });
+
+        auto latency_95 = diskann::get_percentile_stats<float>(
+            stats, n_stats, 0.95, [](const diskann::QueryStats &stats) { return stats.total_us; });
+
+        auto latency_99 = diskann::get_percentile_stats<float>(
+            stats, n_stats, 0.99, [](const diskann::QueryStats &stats) { return stats.total_us; });
+
         auto latency_999 = diskann::get_percentile_stats<float>(
             stats, n_stats, 0.999, [](const diskann::QueryStats &stats) { return stats.total_us; });
 
@@ -361,7 +381,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
 
         diskann::cout << std::setw(6) << L << std::setw(12) << optimized_beamwidth << std::setw(16) << qps
-                      << std::setw(16) << mean_latency << std::setw(16) << latency_999 << std::setw(16) << mean_ios
+                      << std::setw(16) << mean_latency << std::setw(16) << latency_50 << std::setw(16) << latency_95
+                      << std::setw(16) << latency_99 << std::setw(16) << latency_999 << std::setw(16) << mean_ios
                       << std::setw(16) << mean_cpuus;
         if (calc_recall_flag)
         {
